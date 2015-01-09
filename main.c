@@ -14,7 +14,6 @@
 #include "nordic_common.h"
 #include "nrf.h"
 #include "app_error.h"
-#include "nrf_gpio.h"
 #include "nrf51_bitfields.h"
 #include "ble.h"
 #include "ble_hci.h"
@@ -27,31 +26,27 @@
 #include "app_timer.h"
 #include "ble_error_log.h"
 #include "app_gpiote.h"
-#include "app_button.h"
 #include "ble_debug_assert_handler.h"
 #include "pstorage.h"
 #include "ble_lbs.h"
+#include "bsp.h"
+
 #define IS_SRVC_CHANGED_CHARACT_PRESENT 0                                           /**< Include or not the service_changed characteristic. if not enabled, the server's database cannot be changed for the lifetime of the device*/
 
-#define WAKEUP_BUTTON_PIN               BUTTON_0                                    /**< Button used to wake up the application. */
+#define WAKEUP_BUTTON_PIN               0
+#define LEDBUTTON_BUTTON_NO             0
 
-#define ADVERTISING_LED_PIN_NO          LED_0                                       /**< Is on when device is advertising. */
-#define CONNECTED_LED_PIN_NO            LED_1                                       /**< Is on when device has connected. */
-
-#define LEDBUTTON_LED_PIN_NO            LED_0
-#define LEDBUTTON_BUTTON_PIN_NO         BUTTON_1
-
-#define DEVICE_NAME                     "LedButtonDemo"                           /**< Name of device. Will be included in the advertising data. */
+#define DEVICE_NAME                     "LedButtonDemo"                             /**< Name of device. Will be included in the advertising data. */
 
 #define APP_ADV_INTERVAL                64                                          /**< The advertising interval (in units of 0.625 ms. This value corresponds to 40 ms). */
 #define APP_ADV_TIMEOUT_IN_SECONDS      180                                         /**< The advertising timeout (in units of seconds). */
 
 #define APP_TIMER_PRESCALER             0                                           /**< Value of the RTC1 PRESCALER register. */
-#define APP_TIMER_MAX_TIMERS            2                                           /**< Maximum number of simultaneously created timers. */
+#define APP_TIMER_MAX_TIMERS            4                                           /**< Maximum number of simultaneously created timers. */
 #define APP_TIMER_OP_QUEUE_SIZE         4                                           /**< Size of timer operation queues. */
 
 #define MIN_CONN_INTERVAL               MSEC_TO_UNITS(100, UNIT_1_25_MS)            /**< Minimum acceptable connection interval (0.5 seconds). */
-#define MAX_CONN_INTERVAL               MSEC_TO_UNITS(200, UNIT_1_25_MS)           /**< Maximum acceptable connection interval (1 second). */
+#define MAX_CONN_INTERVAL               MSEC_TO_UNITS(200, UNIT_1_25_MS)            /**< Maximum acceptable connection interval (1 second). */
 #define SLAVE_LATENCY                   0                                           /**< Slave latency. */
 #define CONN_SUP_TIMEOUT                MSEC_TO_UNITS(4000, UNIT_10_MS)             /**< Connection supervisory timeout (4 seconds). */
 #define FIRST_CONN_PARAMS_UPDATE_DELAY  APP_TIMER_TICKS(20000, APP_TIMER_PRESCALER) /**< Time from initiating event (connect or start of notification) to first time sd_ble_gap_conn_param_update is called (15 seconds). */
@@ -59,8 +54,6 @@
 #define MAX_CONN_PARAMS_UPDATE_COUNT    3                                           /**< Number of attempts before giving up the connection parameter negotiation. */
 
 #define APP_GPIOTE_MAX_USERS            1                                           /**< Maximum number of users of the GPIOTE handler. */
-
-#define BUTTON_DETECTION_DELAY          APP_TIMER_TICKS(50, APP_TIMER_PRESCALER)    /**< Delay from a GPIOTE event until a button is reported as pushed (in number of timer ticks). */
 
 #define SEC_PARAM_TIMEOUT               30                                          /**< Timeout for Pairing Request or Security Request (in seconds). */
 #define SEC_PARAM_BOND                  1                                           /**< Perform bonding. */
@@ -124,16 +117,6 @@ void assert_nrf_callback(uint16_t line_num, const uint8_t * p_file_name)
 }
 
 
-/**@brief Function for the LEDs initialization.
- *
- * @details Initializes all LEDs used by the application.
- */
-static void leds_init(void)
-{
-    nrf_gpio_cfg_output(ADVERTISING_LED_PIN_NO);
-    nrf_gpio_cfg_output(CONNECTED_LED_PIN_NO);
-    nrf_gpio_cfg_output(LEDBUTTON_LED_PIN_NO);
-}
 
 
 /**@brief Function for the Timer initialization.
@@ -211,11 +194,11 @@ static void led_write_handler(ble_lbs_t * p_lbs, uint8_t led_state)
 {
     if (led_state)
     {
-        nrf_gpio_pin_set(LEDBUTTON_LED_PIN_NO);
+        bsp_indication_set(BSP_INDICATE_USER_STATE_2);
     }
     else
     {
-        nrf_gpio_pin_clear(LEDBUTTON_LED_PIN_NO);
+        bsp_indication_set(BSP_INDICATE_CONNECTED);
     }
 }
 
@@ -327,7 +310,7 @@ static void advertising_start(void)
 
     err_code = sd_ble_gap_adv_start(&adv_params);
     APP_ERROR_CHECK(err_code);
-    nrf_gpio_pin_set(ADVERTISING_LED_PIN_NO);
+    bsp_indication_set(BSP_INDICATE_ADVERTISING);
 }
 
 
@@ -344,19 +327,19 @@ static void on_ble_evt(ble_evt_t * p_ble_evt)
     switch (p_ble_evt->header.evt_id)
     {
         case BLE_GAP_EVT_CONNECTED:
-            nrf_gpio_pin_set(CONNECTED_LED_PIN_NO);
-            nrf_gpio_pin_clear(ADVERTISING_LED_PIN_NO);
+            err_code = bsp_indication_set(BSP_INDICATE_CONNECTED);
+            APP_ERROR_CHECK(err_code);
             m_conn_handle = p_ble_evt->evt.gap_evt.conn_handle;
 
-            err_code = app_button_enable();
+            err_code = bsp_buttons_enable(1 << LEDBUTTON_BUTTON_NO);
             APP_ERROR_CHECK(err_code);
             break;
 
         case BLE_GAP_EVT_DISCONNECTED:
-            nrf_gpio_pin_clear(CONNECTED_LED_PIN_NO);
+            bsp_indication_set(BSP_INDICATE_IDLE);
             m_conn_handle = BLE_CONN_HANDLE_INVALID;
 
-            err_code = app_button_disable();
+            err_code = bsp_buttons_enable(0);
             APP_ERROR_CHECK(err_code);
             
             advertising_start();
@@ -396,12 +379,10 @@ static void on_ble_evt(ble_evt_t * p_ble_evt)
         case BLE_GAP_EVT_TIMEOUT:
             if (p_ble_evt->evt.gap_evt.params.timeout.src == BLE_GAP_TIMEOUT_SRC_ADVERTISEMENT)
             {
-                nrf_gpio_pin_clear(ADVERTISING_LED_PIN_NO);
+                bsp_indication_set(BSP_INDICATE_IDLE);
 
                 // Configure buttons with sense level low as wakeup source.
-                nrf_gpio_cfg_sense_input(WAKEUP_BUTTON_PIN,
-                                         BUTTON_PULL,
-                                         NRF_GPIO_PIN_SENSE_LOW);
+                bsp_buttons_enable(1 << WAKEUP_BUTTON_PIN);
                 
                 // Go to system-off mode (this function will not return; wakeup will cause a reset)                
                 err_code = sd_power_system_off();
@@ -486,14 +467,14 @@ static void scheduler_init(void)
 }
 
 
-static void button_event_handler(uint8_t pin_no, uint8_t button_action)
+static void button_event_handler(bsp_event_t bsp_event)
 {
     uint32_t err_code;
     
-    switch (pin_no)
+    switch (bsp_event)
     {
-        case LEDBUTTON_BUTTON_PIN_NO:
-            err_code = ble_lbs_on_button_change(&m_lbs, button_action);
+        case BSP_EVENT_KEY_0:
+            err_code = ble_lbs_on_button_change(&m_lbs);
             if (err_code != NRF_SUCCESS &&
                 err_code != BLE_ERROR_INVALID_CONN_HANDLE &&
                 err_code != NRF_ERROR_INVALID_STATE)
@@ -503,7 +484,7 @@ static void button_event_handler(uint8_t pin_no, uint8_t button_action)
             break;
 
         default:
-            APP_ERROR_HANDLER(pin_no);
+            APP_ERROR_HANDLER(bsp_event);
             break;
     }
 }
@@ -516,19 +497,16 @@ static void gpiote_init(void)
 }
 
 
-/**@brief Function for initializing the button handler module.
+/**@brief Function for initializing the LEDs and BUTTONS, using the BSP module
  */
-static void buttons_init(void)
+static void leds_buttons_init(void)
 {
-    // Note: Array must be static because a pointer to it will be saved in the Button handler
-    //       module.
-    static app_button_cfg_t buttons[] =
-    {
-        {WAKEUP_BUTTON_PIN, false, BUTTON_PULL, NULL},
-        {LEDBUTTON_BUTTON_PIN_NO, false, BUTTON_PULL, button_event_handler}
-    };
+    uint32_t err_code = bsp_init(BSP_INIT_LED | BSP_INIT_BUTTONS,
+                        APP_TIMER_TICKS(100, APP_TIMER_PRESCALER),
+                        button_event_handler);
+    APP_ERROR_CHECK(err_code);
 
-    APP_BUTTON_INIT(buttons, sizeof(buttons) / sizeof(buttons[0]), BUTTON_DETECTION_DELAY, true);
+    err_code = bsp_buttons_enable(0);
 }
 
 
@@ -546,10 +524,9 @@ static void power_manage(void)
 int main(void)
 {
     // Initialize
-    leds_init();
     timers_init();
     gpiote_init();
-    buttons_init();
+    leds_buttons_init();
     ble_stack_init();
     scheduler_init();    
     gap_params_init();
