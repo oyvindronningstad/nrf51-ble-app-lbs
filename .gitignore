@@ -3,6 +3,8 @@
 arm/*
 !arm/*.uvproj
 !arm/*.uvopt
+!arm/*.uvprojx
+!arm/*.uvoptx
 gcc/*
 !gcc/*.bat
 !gcc/Makefile
